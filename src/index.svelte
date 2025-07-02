@@ -146,7 +146,7 @@ Qty:
 {:else}
 <!-- Only one possible value (required) -->
 <span class="ml-2">{opt.values[0].name}</span>
-<input type="hidden" value={opt.values[0].id} bind:value={orderSelections[variant.id].options[opt.id]} />
+<input type="hidden" bind:value={orderSelections[variant.id].options[opt.id]} />
 {/if}
 {/if}
 {/if}
