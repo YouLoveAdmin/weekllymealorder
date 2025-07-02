@@ -20,7 +20,7 @@ dist/
 
 # Wrangler
 .wrangler/
-wrangler.toml
+wrangler.toml.local
 wrangler.toml.bak
 
 # OS generated files
