@@ -1,0 +1,11 @@
+name = "weekly-lunch-orders"
+account_id = "YOUR_ACCOUNT_ID"
+main = "src/worker.ts"
+compatibility_date = "2025-06-30"
+
+[d1_databases]
+DB = { binding = "DB", database_name = "lunch_orders", database_id = "<D1_DATABASE_ID>" }
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
