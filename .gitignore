@@ -20,6 +20,7 @@ dist/
 
 # Wrangler
 .wrangler/
+wrangler.toml
 wrangler.toml.local
 wrangler.toml.bak
 
