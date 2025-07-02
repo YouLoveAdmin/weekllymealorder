@@ -3,9 +3,9 @@
 
 ## Setup and Deployment
 1. **Install Dependencies:** Ensure Node.js is installed. Run `npm install` to install all dependencies.
-2. **Cloudflare Configuration:** Update the `wrangler.toml`:
-   - Set `"account_id"` to your Cloudflare account ID.
-   - Create a D1 database named "lunch_orders" (via `wrangler d1 create lunch_orders`) and update the `database_id` in `wrangler.toml` with your database's ID.
+2. **Cloudflare Configuration:** Set environment variables used by `wrangler.toml`:
+   - `CLOUDFLARE_ACCOUNT_ID` – your Cloudflare account ID.
+   - `D1_DATABASE_ID` – the ID of the D1 database named `lunch_orders` (create it with `wrangler d1 create lunch_orders`).
 3. **Database Schema:** Apply the schema and seed data to your D1 database:
 ```bash
 npx wrangler d1 execute lunch_orders --file=schema.sql
