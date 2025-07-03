@@ -32,10 +32,11 @@ onMount(async () => {
         const locData = await locRes.json();
         deliveryLocations = locData.locations || [];
       } else {
-        console.error('Failed to fetch delivery locations:', locRes.status);
+        console.warn('Delivery locations not available, using fallback');
+        deliveryLocations = []; // Fallback to empty array
       }
     } catch (e) {
-      console.error('Error fetching delivery locations:', e);
+      console.warn('Delivery locations feature disabled:', e);
       deliveryLocations = []; // Fallback to empty array
     }
     
@@ -84,7 +85,14 @@ onMount(async () => {
       selectedDeliveryLocation = currentOrder.delivery_location_id;
     } else if (userInfo && userInfo.preferredDeliveryLocationId) {
       selectedDeliveryLocation = userInfo.preferredDeliveryLocationId;
+    } else {
+      // No preference set, leave as null to show "Select delivery location"
+      selectedDeliveryLocation = null;
     }
+    
+    console.log('Debug - deliveryLocations:', deliveryLocations);
+    console.log('Debug - selectedDeliveryLocation:', selectedDeliveryLocation);
+    console.log('Debug - userInfo:', userInfo);
   } catch (e) {
     console.error('Error in onMount:', e);
     errorMsg = 'Failed to load menu.';
