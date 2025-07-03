@@ -4,6 +4,8 @@ let adminMeals = [];
 let adminOptions = [];
 let pricingRules = [];
 let variantChoices = []; // combined list of variants for dropdown
+let adminOrders = [];
+let showOrders = false;
 let message = '';
 let errorMsg = '';
 // Form fields for admin actions
@@ -39,9 +41,14 @@ async function loadPricingRules() {
   const data = await res.json();
   pricingRules = data.pricing_rules || [];
 }
+async function loadAdminOrders() {
+  const res = await fetch('/api/admin/orders');
+  const data = await res.json();
+  adminOrders = data.orders || [];
+}
 onMount(async () => {
   try {
-    await Promise.all([loadAdminMeals(), loadAdminOptions(), loadPricingRules()]);
+    await Promise.all([loadAdminMeals(), loadAdminOptions(), loadPricingRules(), loadAdminOrders()]);
   } catch (e) {
     errorMsg = 'Failed to load admin data.';
   }
@@ -355,3 +362,60 @@ async function createPricingRule() {
 <input type="number" placeholder="Price per unit (cents)" bind:value={newRulePrice} class="border px-2 py-1 mr-2 w-28" />
 <button class="bg-blue-600 text-white px-3 py-1 rounded" on:click={createPricingRule}>Add Rule</button>
 </div>
+<h2 class="text-2xl font-bold mb-2">Orders</h2>
+<div class="mb-4">
+  <button class="bg-blue-600 text-white px-3 py-1 rounded" on:click={async () => { showOrders = !showOrders; if (showOrders) await loadAdminOrders(); }}>
+    {showOrders ? 'Hide Orders' : 'Show Orders'}
+  </button>
+</div>
+{#if showOrders}
+{#if adminOrders.length === 0}
+<p class="text-gray-500 text-sm">No orders found.</p>
+{:else}
+<table class="mb-4 text-left border-collapse w-full">
+<tr>
+  <th class="p-2 border-b">Order ID</th>
+  <th class="p-2 border-b">Customer</th>
+  <th class="p-2 border-b">Status</th>
+  <th class="p-2 border-b">Total</th>
+  <th class="p-2 border-b">Delivery Location</th>
+  <th class="p-2 border-b">Items</th>
+  <th class="p-2 border-b">Date</th>
+</tr>
+{#each adminOrders as order}
+<tr>
+  <td class="p-2 border-b">{order.id}</td>
+  <td class="p-2 border-b">{order.user_name}<br><small class="text-gray-600">{order.user_email}</small></td>
+  <td class="p-2 border-b">
+    <span class="px-2 py-1 rounded text-xs {order.status === 'placed' ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}">
+      {order.status}
+    </span>
+  </td>
+  <td class="p-2 border-b">${(order.total_price / 100).toFixed(2)}</td>
+  <td class="p-2 border-b">
+    {#if order.delivery_location_name}
+      <strong>{order.delivery_location_name}</strong>
+      {#if order.delivery_location_address}
+        <br><small class="text-gray-600">{order.delivery_location_address}</small>
+      {/if}
+    {:else}
+      <em class="text-gray-500">No location</em>
+    {/if}
+  </td>
+  <td class="p-2 border-b">
+    {#if order.items && order.items.length > 0}
+      <ul class="text-sm">
+        {#each order.items as item}
+          <li>{item.quantity}× {item.meal_name} - {item.variant_name}</li>
+        {/each}
+      </ul>
+    {:else}
+      <em class="text-gray-500">No items</em>
+    {/if}
+  </td>
+  <td class="p-2 border-b text-sm">{new Date(order.created_at).toLocaleDateString()}</td>
+</tr>
+{/each}
+</table>
+{/if}
+{/if}

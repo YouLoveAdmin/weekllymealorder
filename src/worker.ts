@@ -39,12 +39,12 @@ export default {
       return new Response('Unauthorized', { status: 401 });
     }
     // Ensure user exists in database (create if not)
-    let user = await env.DB.prepare('SELECT id, name FROM users WHERE email = ?').bind(userEmail).first();
+    let user = await env.DB.prepare('SELECT id, name, preferred_delivery_location_id FROM users WHERE email = ?').bind(userEmail).first();
     if (!user) {
       const username = userEmail.split('@')[0] || 'User';
       const userCreatedAt = getPSTTimestamp();
       await env.DB.prepare('INSERT INTO users (name, email, created_at) VALUES (?, ?, ?)').bind(username, userEmail, userCreatedAt).run();
-      user = await env.DB.prepare('SELECT id, name FROM users WHERE email = ?').bind(userEmail).first();
+      user = await env.DB.prepare('SELECT id, name, preferred_delivery_location_id FROM users WHERE email = ?').bind(userEmail).first();
     }
     const userId = user.id;
     // Check if user is an admin
@@ -57,7 +57,7 @@ export default {
     // Public API endpoints
     // Get basic user info (including admin flag)
     if (path === '/api/me' && method === 'GET') {
-      const info = { name: user.name, email: userEmail, isAdmin: isAdmin };
+      const info = { name: user.name, email: userEmail, isAdmin: isAdmin, preferredDeliveryLocationId: user.preferred_delivery_location_id };
       return new Response(JSON.stringify(info), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     // Get weekly menu and meals
@@ -109,9 +109,15 @@ export default {
       if (!week) {
         return new Response(JSON.stringify({ order: null }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-      const order = await env.DB.prepare('SELECT id, status, total_price FROM orders WHERE user_id = ? AND order_week_id = ?').bind(userId, week.id).first();
+      const order = await env.DB.prepare('SELECT id, status, total_price, delivery_location_id FROM orders WHERE user_id = ? AND order_week_id = ?').bind(userId, week.id).first();
       if (!order) {
         return new Response(JSON.stringify({ order: null }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      
+      // Get delivery location if set
+      let deliveryLocation = null;
+      if (order.delivery_location_id) {
+        deliveryLocation = await env.DB.prepare('SELECT id, name, address FROM delivery_locations WHERE id = ?').bind(order.delivery_location_id).first();
       }
       // Fetch order items
       const itemsRes = await env.DB.prepare('SELECT id, meal_variant_id, quantity, base_price FROM order_items WHERE order_id = ?').bind(order.id).all();
@@ -142,6 +148,7 @@ export default {
         item.line_total = unitPrice * item.quantity;
       }
       order.items = items;
+      order.delivery_location = deliveryLocation;
       return new Response(JSON.stringify({ order: order }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     // Add items to cart (does not place order yet)
@@ -167,12 +174,23 @@ export default {
       }
       const data = await request.json();
       const items = data.items || [];
+      const deliveryLocationId = data.delivery_location_id || user.preferred_delivery_location_id;
+      
       if (!items.length) {
         return new Response(JSON.stringify({ error: 'No items in cart' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
       }
+      
+      // Validate delivery location if provided
+      if (deliveryLocationId) {
+        const locationExists = await env.DB.prepare('SELECT id FROM delivery_locations WHERE id = ? AND is_active = 1').bind(deliveryLocationId).first();
+        if (!locationExists) {
+          return new Response(JSON.stringify({ error: 'Invalid delivery location' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        }
+      }
+      
       // Create a new order in "cart" status
       const currentTimestamp = getPSTTimestamp();
-      await env.DB.prepare('INSERT INTO orders (user_id, order_week_id, status, total_price, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').bind(userId, week.id, 'cart', 0, currentTimestamp, currentTimestamp).run();
+      await env.DB.prepare('INSERT INTO orders (user_id, order_week_id, status, total_price, delivery_location_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(userId, week.id, 'cart', 0, deliveryLocationId, currentTimestamp, currentTimestamp).run();
       const newOrderRes = await env.DB.prepare('SELECT last_insert_rowid() as orderId').first();
       const orderId = newOrderRes.orderId;
       let orderTotal = 0;
@@ -245,6 +263,13 @@ export default {
       // Update order status to "placed"
       const updateTimestamp = getPSTTimestamp();
       await env.DB.prepare('UPDATE orders SET status = ?, updated_at = ? WHERE id = ?').bind('placed', updateTimestamp, existingOrder.id).run();
+      
+      // Update user's preferred delivery location if order has one
+      const orderLocation = await env.DB.prepare('SELECT delivery_location_id FROM orders WHERE id = ?').bind(existingOrder.id).first();
+      if (orderLocation && orderLocation.delivery_location_id) {
+        await env.DB.prepare('UPDATE users SET preferred_delivery_location_id = ? WHERE id = ?').bind(orderLocation.delivery_location_id, userId).run();
+      }
+      
       return new Response(JSON.stringify({ orderId: existingOrder.id, status: 'placed' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     // Delete current user's order for the week (before cutoff)
@@ -403,12 +428,14 @@ export default {
       // List all orders (admin view)
       if (path === '/api/admin/orders' && method === 'GET') {
         const ordersRes = await env.DB.prepare(
-          'SELECT o.id, o.user_id, o.status, o.total_price, o.created_at, o.updated_at, ' +
+          'SELECT o.id, o.user_id, o.status, o.total_price, o.created_at, o.updated_at, o.delivery_location_id, ' +
           'u.name AS user_name, u.email AS user_email, ' +
-          'ow.week_start_date, ow.week_end_date ' +
+          'ow.week_start_date, ow.week_end_date, ' +
+          'dl.name AS delivery_location_name, dl.address AS delivery_location_address ' +
           'FROM orders o ' +
           'JOIN users u ON o.user_id = u.id ' +
           'JOIN order_weeks ow ON o.order_week_id = ow.id ' +
+          'LEFT JOIN delivery_locations dl ON o.delivery_location_id = dl.id ' +
           'ORDER BY o.created_at DESC'
         ).all();
         const orders = ordersRes.results || [];

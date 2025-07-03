@@ -3,12 +3,25 @@ import { onMount, onDestroy } from 'svelte';
 let menu = null;
 let currentOrder = null;
 let orderSelections = {};
+let deliveryLocations = [];
+let selectedDeliveryLocation = null;
+let userInfo = null;
 let isLoading = true;
 let errorMsg = '';
 let successMsg = '';
 let cutoffCheckInterval;
 onMount(async () => {
   try {
+    // Fetch user info
+    const userRes = await fetch('/api/me');
+    const userData = await userRes.json();
+    userInfo = userData;
+    
+    // Fetch delivery locations
+    const locRes = await fetch('/api/delivery-locations');
+    const locData = await locRes.json();
+    deliveryLocations = locData.locations || [];
+    
     // Fetch weekly menu data
     const res = await fetch('/api/meals');
     const data = await res.json();
@@ -35,6 +48,13 @@ onMount(async () => {
     const orderRes = await fetch('/api/order');
     const orderData = await orderRes.json();
     currentOrder = orderData.order;
+    
+    // Set default delivery location
+    if (currentOrder && currentOrder.delivery_location_id) {
+      selectedDeliveryLocation = currentOrder.delivery_location_id;
+    } else if (userInfo && userInfo.preferredDeliveryLocationId) {
+      selectedDeliveryLocation = userInfo.preferredDeliveryLocationId;
+    }
   } catch (e) {
     errorMsg = 'Failed to load menu.';
   } finally {
@@ -99,12 +119,13 @@ async function addToCart() {
     errorMsg = 'Please select at least one item.';
     return;
   }
+  
   // Submit to cart
   try {
     const res = await fetch('/api/cart', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items })
+      body: JSON.stringify({ items, delivery_location_id: selectedDeliveryLocation })
     });
     const result = await res.json();
     if (!res.ok) {
@@ -179,6 +200,31 @@ async function deleteOrder() {
     }
   } catch (e) {
     errorMsg = 'Failed to delete order.';
+  }
+}
+
+async function updateDeliveryLocation() {
+  errorMsg = '';
+  successMsg = '';
+  
+  try {
+    const res = await fetch('/api/cart/delivery-location', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ delivery_location_id: selectedDeliveryLocation })
+    });
+    const result = await res.json();
+    if (!res.ok) {
+      errorMsg = result.error || 'Failed to update delivery location.';
+    } else {
+      successMsg = 'Delivery location updated successfully!';
+      // Refresh current order details
+      const orderRes = await fetch('/api/order');
+      const orderData = await orderRes.json();
+      currentOrder = orderData.order;
+    }
+  } catch (e) {
+    errorMsg = 'Failed to update delivery location.';
   }
 }
 </script>
@@ -269,6 +315,17 @@ Qty:
 </li>
 {/each}
 </ul>
+
+<!-- Delivery Location -->
+{#if currentOrder.delivery_location}
+<div class="mb-4">
+  <p class="font-medium text-sm">Delivery Location: {currentOrder.delivery_location.name}</p>
+  {#if currentOrder.delivery_location.address}
+    <p class="text-gray-600 text-sm">{currentOrder.delivery_location.address}</p>
+  {/if}
+</div>
+{/if}
+
 <p class="font-medium">Total: ${ (currentOrder.total_price / 100).toFixed(2) }</p>
 {#if currentOrder.status === 'placed'}
 <div class="mt-3 flex items-center gap-4">
@@ -284,24 +341,39 @@ Qty:
   {/if}
 </div>
 {:else if currentOrder.status === 'cart'}
-<div class="mt-3 flex items-center gap-4">
-  <p class="text-yellow-600 font-semibold">Items in cart (not yet ordered).</p>
-  {#if menu && menu.week && menu.week.is_open}
-  <button 
-    on:click={placeOrder}
-    class="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded font-semibold transition-colors"
-    title="Place your order"
-  >
-    Place Order
-  </button>
-  <button 
-    on:click={deleteOrder}
-    class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-sm transition-colors"
-    title="Delete your cart"
-  >
-    Delete Cart
-  </button>
-  {/if}
+<div class="mt-3">
+  <div class="mb-4">
+    <label class="block text-sm font-medium mb-2">Delivery Location:</label>
+    <select 
+      bind:value={selectedDeliveryLocation} 
+      on:change={updateDeliveryLocation}
+      class="w-full max-w-md border rounded px-3 py-2"
+    >
+      <option value={null}>Select delivery location</option>
+      {#each deliveryLocations as location}
+        <option value={location.id}>{location.name}{#if location.address} - {location.address}{/if}</option>
+      {/each}
+    </select>
+  </div>
+  <div class="flex items-center gap-4">
+    <p class="text-yellow-600 font-semibold">Items in cart (not yet ordered).</p>
+    {#if menu && menu.week && menu.week.is_open}
+    <button 
+      on:click={placeOrder}
+      class="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded font-semibold transition-colors"
+      title="Place your order"
+    >
+      Place Order
+    </button>
+    <button 
+      on:click={deleteOrder}
+      class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-sm transition-colors"
+      title="Delete your cart"
+    >
+      Delete Cart
+    </button>
+    {/if}
+  </div>
 </div>
 {:else}
 <p class="text-gray-600 font-semibold mt-2">Order status: {currentOrder.status}</p>
@@ -316,6 +388,18 @@ Qty:
 <p class="text-green-600 mb-2">{successMsg}</p>
 {/if}
 {#if !currentOrder || currentOrder.status !== 'cart'}
+<div class="mb-4">
+  <label class="block text-sm font-medium mb-2">Delivery Location:</label>
+  <select 
+    bind:value={selectedDeliveryLocation} 
+    class="w-full max-w-md border rounded px-3 py-2 mb-4"
+  >
+    <option value={null}>Select delivery location</option>
+    {#each deliveryLocations as location}
+      <option value={location.id}>{location.name}{#if location.address} - {location.address}{/if}</option>
+    {/each}
+  </select>
+</div>
 <button class="px-4 py-2 bg-blue-600 text-white font-semibold rounded hover:bg-blue-700 transition-colors" on:click|preventDefault={addToCart}>Add to Cart</button>
 {/if}
 {/if}
