@@ -1,6 +1,6 @@
 name = "weekly-lunch-orders"
 
-account_id = "env.CLOUDFLARE_ACCOUNT_ID"
+account_id = "bbf7369bf71453ff85da6e28335e8a06"
 
 main = "src/worker.ts"
 compatibility_date = "2025-06-30"
@@ -10,7 +10,8 @@ compatibility_date = "2025-06-30"
 
 binding = "DB"
 database_name = "lunch_orders"
-database_id = "env.D1_DATABASE_ID"
+database_id = "67d6a539-a52f-47d1-b353-75160c767d3a"
+
 
 
 [assets]

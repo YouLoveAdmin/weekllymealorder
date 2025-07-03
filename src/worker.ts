@@ -2,6 +2,32 @@ export interface Env {
   DB: any; // D1Database binding
   ASSETS: { fetch: (req: Request) => Promise<Response> };
 }
+
+// Define ExecutionContext interface for Cloudflare Workers
+interface ExecutionContext {
+  waitUntil(promise: Promise<any>): void;
+  passThroughOnException(): void;
+}
+
+// Utility function to get current PST date/time
+function getPSTDateTime() {
+  const now = new Date();
+  // Convert to PST (UTC-8) or PDT (UTC-7) automatically
+  const pstTime = new Date(now.toLocaleString("en-US", { timeZone: "America/Los_Angeles" }));
+  return pstTime;
+}
+
+// Utility function to get current PST date string in YYYY-MM-DD format
+function getPSTDateString() {
+  const pstTime = getPSTDateTime();
+  return pstTime.toISOString().split('T')[0];
+}
+
+// Utility function to get current PST timestamp for database
+function getPSTTimestamp() {
+  const pstTime = getPSTDateTime();
+  return pstTime.toISOString();
+}
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -16,7 +42,8 @@ export default {
     let user = await env.DB.prepare('SELECT id, name FROM users WHERE email = ?').bind(userEmail).first();
     if (!user) {
       const username = userEmail.split('@')[0] || 'User';
-      await env.DB.prepare('INSERT INTO users (name, email) VALUES (?, ?)').bind(username, userEmail).run();
+      const userCreatedAt = getPSTTimestamp();
+      await env.DB.prepare('INSERT INTO users (name, email, created_at) VALUES (?, ?, ?)').bind(username, userEmail, userCreatedAt).run();
       user = await env.DB.prepare('SELECT id, name FROM users WHERE email = ?').bind(userEmail).first();
     }
     const userId = user.id;
@@ -41,7 +68,7 @@ export default {
         return new Response(JSON.stringify({ week: null, meals: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       // Determine if ordering is still open (check cutoff date)
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = getPSTDateString();
       if (todayStr > week.cutoff_date) {
         week.is_open = 0; // treat as closed if past cutoff
       }
@@ -117,23 +144,23 @@ export default {
       order.items = items;
       return new Response(JSON.stringify({ order: order }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
-    // Place or update an order for the current week
-    if (path === '/api/order' && method === 'POST') {
+    // Add items to cart (does not place order yet)
+    if (path === '/api/cart' && method === 'POST') {
       const week = await env.DB.prepare('SELECT * FROM order_weeks WHERE is_open = 1 LIMIT 1').first();
       if (!week || !week.is_open) {
         return new Response(JSON.stringify({ error: 'Ordering is not open' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
       }
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = getPSTDateString();
       if (todayStr > week.cutoff_date) {
         return new Response(JSON.stringify({ error: 'Order period has closed' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
       }
-      // Enforce one order per user per week
+      // Check for existing order
       const existingOrder = await env.DB.prepare('SELECT id, status FROM orders WHERE user_id = ? AND order_week_id = ?').bind(userId, week.id).first();
       if (existingOrder && existingOrder.status === 'placed') {
         return new Response(JSON.stringify({ error: 'You have already placed an order this week' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
       }
       if (existingOrder && existingOrder.status === 'cart') {
-        // Remove existing cart to replace with new order
+        // Remove existing cart to replace with new one
         await env.DB.prepare('DELETE FROM order_item_options WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)').bind(existingOrder.id).run();
         await env.DB.prepare('DELETE FROM order_items WHERE order_id = ?').bind(existingOrder.id).run();
         await env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(existingOrder.id).run();
@@ -141,10 +168,11 @@ export default {
       const data = await request.json();
       const items = data.items || [];
       if (!items.length) {
-        return new Response(JSON.stringify({ error: 'No items in order' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ error: 'No items in cart' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
       }
       // Create a new order in "cart" status
-      await env.DB.prepare('INSERT INTO orders (user_id, order_week_id, status, total_price) VALUES (?, ?, ?, ?)').bind(userId, week.id, 'cart', 0).run();
+      const currentTimestamp = getPSTTimestamp();
+      await env.DB.prepare('INSERT INTO orders (user_id, order_week_id, status, total_price, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').bind(userId, week.id, 'cart', 0, currentTimestamp, currentTimestamp).run();
       const newOrderRes = await env.DB.prepare('SELECT last_insert_rowid() as orderId').first();
       const orderId = newOrderRes.orderId;
       let orderTotal = 0;
@@ -187,9 +215,62 @@ export default {
         const itemTotal = (basePrice + extrasCost) * quantity;
         orderTotal += itemTotal;
       }
-      // Update order status to "placed" and set total price
-      await env.DB.prepare('UPDATE orders SET status = ?, total_price = ? WHERE id = ?').bind('placed', orderTotal, orderId).run();
-      return new Response(JSON.stringify({ orderId: orderId, status: 'placed' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      // Update order total (but keep status as "cart")
+      const updateTimestamp = getPSTTimestamp();
+      await env.DB.prepare('UPDATE orders SET total_price = ?, updated_at = ? WHERE id = ?').bind(orderTotal, updateTimestamp, orderId).run();
+      return new Response(JSON.stringify({ orderId: orderId, status: 'cart' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Place order (convert cart to placed order)
+    if (path === '/api/order' && method === 'POST') {
+      const week = await env.DB.prepare('SELECT * FROM order_weeks WHERE is_open = 1 LIMIT 1').first();
+      if (!week || !week.is_open) {
+        return new Response(JSON.stringify({ error: 'Ordering is not open' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      const todayStr = getPSTDateString();
+      if (todayStr > week.cutoff_date) {
+        return new Response(JSON.stringify({ error: 'Order period has closed' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      // Find existing cart
+      const existingOrder = await env.DB.prepare('SELECT id, status FROM orders WHERE user_id = ? AND order_week_id = ?').bind(userId, week.id).first();
+      if (!existingOrder) {
+        return new Response(JSON.stringify({ error: 'No cart found. Please add items to cart first.' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (existingOrder.status === 'placed') {
+        return new Response(JSON.stringify({ error: 'You have already placed an order this week' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (existingOrder.status !== 'cart') {
+        return new Response(JSON.stringify({ error: 'Invalid order status' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      // Update order status to "placed"
+      const updateTimestamp = getPSTTimestamp();
+      await env.DB.prepare('UPDATE orders SET status = ?, updated_at = ? WHERE id = ?').bind('placed', updateTimestamp, existingOrder.id).run();
+      return new Response(JSON.stringify({ orderId: existingOrder.id, status: 'placed' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    // Delete current user's order for the week (before cutoff)
+    if (path === '/api/order' && method === 'DELETE') {
+      const week = await env.DB.prepare('SELECT * FROM order_weeks WHERE is_open = 1 LIMIT 1').first();
+      if (!week || !week.is_open) {
+        return new Response(JSON.stringify({ error: 'No active order week' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      const todayStr = getPSTDateString();
+      if (todayStr > week.cutoff_date) {
+        return new Response(JSON.stringify({ error: 'Order period has closed. Cannot delete order after cutoff date.' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      // Find existing order
+      const existingOrder = await env.DB.prepare('SELECT id, status FROM orders WHERE user_id = ? AND order_week_id = ?').bind(userId, week.id).first();
+      if (!existingOrder) {
+        return new Response(JSON.stringify({ error: 'No order found to delete' }), { status: 404, headers: { 'Content-Type': 'application/json' } });
+      }
+      // Can delete both cart and placed orders before cutoff
+      if (existingOrder.status !== 'placed' && existingOrder.status !== 'cart') {
+        return new Response(JSON.stringify({ error: 'Invalid order status' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      // Delete order and related data
+      await env.DB.prepare('DELETE FROM order_item_options WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)').bind(existingOrder.id).run();
+      await env.DB.prepare('DELETE FROM order_items WHERE order_id = ?').bind(existingOrder.id).run();
+      await env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(existingOrder.id).run();
+      return new Response(JSON.stringify({ success: true, message: 'Order deleted successfully' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     // Admin API endpoints (require admin privileges)
     if (path.startsWith('/api/admin')) {
@@ -222,6 +303,7 @@ export default {
         }
         const refRes = await env.DB.prepare('SELECT IFNULL(MAX(ref_id), 0) + 1 as newRef FROM meals').first();
         const newRef = refRes.newRef;
+        const createdAt = getPSTTimestamp();
         await env.DB.prepare('INSERT INTO meals (ref_id, version, name, description, is_active) VALUES (?, ?, ?, ?, ?)').bind(newRef, 1, name, description, 1).run();
         return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
@@ -235,7 +317,8 @@ export default {
         if (!mealRef || !name || price == null) {
           return new Response(JSON.stringify({ error: 'Missing variant fields' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
         }
-        await env.DB.prepare('INSERT INTO meal_variants (meal_ref_id, version, name, price, calories, is_active) VALUES (?, ?, ?, ?, ?, ?)').bind(mealRef, 1, name, price, calories, 1).run();
+        const createdAt = getPSTTimestamp();
+        await env.DB.prepare('INSERT INTO meal_variants (meal_ref_id, version, name, price, calories, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(mealRef, 1, name, price, calories, 1, createdAt).run();
         return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       // Create a new option group
@@ -249,7 +332,8 @@ export default {
         }
         const refRes = await env.DB.prepare('SELECT IFNULL(MAX(ref_id), 0) + 1 as newRef FROM options').first();
         const newRef = refRes.newRef;
-        await env.DB.prepare('INSERT INTO options (ref_id, version, name, is_required, is_multi_select, is_active) VALUES (?, ?, ?, ?, ?, ?)').bind(newRef, 1, name, isRequired, isMulti, 1).run();
+        const createdAt = getPSTTimestamp();
+        await env.DB.prepare('INSERT INTO options (ref_id, version, name, is_required, is_multi_select, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(newRef, 1, name, isRequired, isMulti, 1, createdAt).run();
         return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       // Add a new option value
@@ -262,7 +346,8 @@ export default {
         if (!optionRef || !name) {
           return new Response(JSON.stringify({ error: 'Missing option value fields' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
         }
-        await env.DB.prepare('INSERT INTO option_values (option_ref_id, version, name, extra_cost, is_active) VALUES (?, ?, ?, ?, ?)').bind(optionRef, 1, name, extraCost, 1).run();
+        const createdAt = getPSTTimestamp();
+        await env.DB.prepare('INSERT INTO option_values (option_ref_id, version, name, extra_cost, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?)').bind(optionRef, 1, name, extraCost, 1, createdAt).run();
         return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       // Link an option group to a meal
@@ -289,7 +374,8 @@ export default {
         if (!variantId || minQty == null || pricePerUnit == null) {
           return new Response(JSON.stringify({ error: 'Missing pricing rule fields' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
         }
-        await env.DB.prepare('INSERT INTO meal_order_pricing_rules (meal_variant_id, min_total_quantity, price_per_unit) VALUES (?, ?, ?)').bind(variantId, minQty, pricePerUnit).run();
+        const createdAt = getPSTTimestamp();
+        await env.DB.prepare('INSERT INTO meal_order_pricing_rules (meal_variant_id, min_total_quantity, price_per_unit, created_at) VALUES (?, ?, ?, ?)').bind(variantId, minQty, pricePerUnit, createdAt).run();
         return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       // List all option groups (with their values)
@@ -312,6 +398,35 @@ export default {
           'JOIN meals m ON v.meal_ref_id = m.ref_id AND m.is_active = 1'
         ).all();
         return new Response(JSON.stringify({ pricing_rules: rulesRes.results || [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      
+      // List all orders (admin view)
+      if (path === '/api/admin/orders' && method === 'GET') {
+        const ordersRes = await env.DB.prepare(
+          'SELECT o.id, o.user_id, o.status, o.total_price, o.created_at, o.updated_at, ' +
+          'u.name AS user_name, u.email AS user_email, ' +
+          'ow.week_start_date, ow.week_end_date ' +
+          'FROM orders o ' +
+          'JOIN users u ON o.user_id = u.id ' +
+          'JOIN order_weeks ow ON o.order_week_id = ow.id ' +
+          'ORDER BY o.created_at DESC'
+        ).all();
+        const orders = ordersRes.results || [];
+        
+        // Get order items for each order
+        for (const order of orders) {
+          const itemsRes = await env.DB.prepare(
+            'SELECT oi.quantity, oi.base_price, ' +
+            'mv.name AS variant_name, m.name AS meal_name ' +
+            'FROM order_items oi ' +
+            'JOIN meal_variants mv ON oi.meal_variant_id = mv.id ' +
+            'JOIN meals m ON mv.meal_ref_id = m.ref_id ' +
+            'WHERE oi.order_id = ?'
+          ).bind(order.id).all();
+          order.items = itemsRes.results || [];
+        }
+        
+        return new Response(JSON.stringify({ orders: orders }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
     }
     // For any other request, serve static assets

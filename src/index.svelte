@@ -1,11 +1,12 @@
 <script>
-import { onMount } from 'svelte';
+import { onMount, onDestroy } from 'svelte';
 let menu = null;
 let currentOrder = null;
 let orderSelections = {};
 let isLoading = true;
 let errorMsg = '';
 let successMsg = '';
+let cutoffCheckInterval;
 onMount(async () => {
   try {
     // Fetch weekly menu data
@@ -39,8 +40,36 @@ onMount(async () => {
   } finally {
     isLoading = false;
   }
+
+  // Check cutoff every 30 seconds to update UI if period has closed
+  cutoffCheckInterval = setInterval(() => {
+    if (menu && menu.week && menu.week.is_open) {
+      checkCutoffTime();
+    }
+  }, 30000); // Check every 30 seconds
 });
-async function placeOrder() {
+
+onDestroy(() => {
+  if (cutoffCheckInterval) {
+    clearInterval(cutoffCheckInterval);
+  }
+});
+
+async function checkCutoffTime() {
+  try {
+    const res = await fetch('/api/meals');
+    const data = await res.json();
+    if (data.week && data.week.is_open === 0 && menu.week.is_open === 1) {
+      // Cutoff has passed, update the UI
+      menu.week = data.week;
+      errorMsg = 'Order period has closed. Orders can no longer be placed for this week.';
+    }
+  } catch (e) {
+    // Silently handle check failures
+  }
+}
+
+async function addToCart() {
   errorMsg = '';
   successMsg = '';
   // Build order items from selections
@@ -70,12 +99,42 @@ async function placeOrder() {
     errorMsg = 'Please select at least one item.';
     return;
   }
+  // Submit to cart
+  try {
+    const res = await fetch('/api/cart', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items })
+    });
+    const result = await res.json();
+    if (!res.ok) {
+      errorMsg = result.error || 'Failed to add to cart.';
+    } else {
+      successMsg = 'Items added to cart successfully!';
+      // Refresh current order details
+      const orderRes = await fetch('/api/order');
+      const orderData = await orderRes.json();
+      currentOrder = orderData.order;
+    }
+  } catch (e) {
+    errorMsg = 'Failed to add to cart.';
+  }
+}
+
+async function placeOrder() {
+  errorMsg = '';
+  successMsg = '';
+  
+  if (!currentOrder || currentOrder.status !== 'cart') {
+    errorMsg = 'No cart found. Please add items to cart first.';
+    return;
+  }
+  
   // Submit order
   try {
     const res = await fetch('/api/order', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items })
+      headers: { 'Content-Type': 'application/json' }
     });
     const result = await res.json();
     if (!res.ok) {
@@ -89,6 +148,37 @@ async function placeOrder() {
     }
   } catch (e) {
     errorMsg = 'Failed to place order.';
+  }
+}
+
+async function deleteOrder() {
+  errorMsg = '';
+  successMsg = '';
+  
+  if (!currentOrder || (currentOrder.status !== 'placed' && currentOrder.status !== 'cart')) {
+    errorMsg = 'No order to delete.';
+    return;
+  }
+  
+  const orderType = currentOrder.status === 'cart' ? 'cart' : 'order';
+  if (!confirm(`Are you sure you want to delete your ${orderType}? This action cannot be undone.`)) {
+    return;
+  }
+  
+  try {
+    const res = await fetch('/api/order', {
+      method: 'DELETE'
+    });
+    const result = await res.json();
+    
+    if (!res.ok) {
+      errorMsg = result.error || 'Failed to delete order.';
+    } else {
+      successMsg = result.message || `${orderType.charAt(0).toUpperCase() + orderType.slice(1)} deleted successfully!`;
+      currentOrder = null;
+    }
+  } catch (e) {
+    errorMsg = 'Failed to delete order.';
   }
 }
 </script>
@@ -159,7 +249,13 @@ Qty:
 {/if}
 <!-- Current Order Summary -->
 {#if currentOrder}
-<h2 class="text-xl font-semibold mt-6 mb-2">Your Order for This Week:</h2>
+<h2 class="text-xl font-semibold mt-6 mb-2">
+  {#if currentOrder.status === 'cart'}
+    Your Cart for This Week:
+  {:else}
+    Your Order for This Week:
+  {/if}
+</h2>
 <ul class="mb-4">
 {#each currentOrder.items as item}
 <li class="mb-1">{item.quantity}× {item.meal_name} – {item.variant_name}
@@ -175,9 +271,40 @@ Qty:
 </ul>
 <p class="font-medium">Total: ${ (currentOrder.total_price / 100).toFixed(2) }</p>
 {#if currentOrder.status === 'placed'}
-<p class="text-green-600 font-semibold mt-2">Your order has been placed.</p>
+<div class="mt-3 flex items-center gap-4">
+  <p class="text-green-600 font-semibold">Your order has been placed.</p>
+  {#if menu && menu.week && menu.week.is_open}
+  <button 
+    on:click={deleteOrder}
+    class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-sm transition-colors"
+    title="Delete your order (only available before cutoff date)"
+  >
+    Delete Order
+  </button>
+  {/if}
+</div>
+{:else if currentOrder.status === 'cart'}
+<div class="mt-3 flex items-center gap-4">
+  <p class="text-yellow-600 font-semibold">Items in cart (not yet ordered).</p>
+  {#if menu && menu.week && menu.week.is_open}
+  <button 
+    on:click={placeOrder}
+    class="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded font-semibold transition-colors"
+    title="Place your order"
+  >
+    Place Order
+  </button>
+  <button 
+    on:click={deleteOrder}
+    class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-sm transition-colors"
+    title="Delete your cart"
+  >
+    Delete Cart
+  </button>
+  {/if}
+</div>
 {:else}
-<p class="text-yellow-600 font-semibold mt-2">Order saved (not yet submitted).</p>
+<p class="text-gray-600 font-semibold mt-2">Order status: {currentOrder.status}</p>
 {/if}
 {/if}
 <!-- Order Submission -->
@@ -188,6 +315,8 @@ Qty:
 {#if successMsg}
 <p class="text-green-600 mb-2">{successMsg}</p>
 {/if}
-<button class="px-4 py-2 bg-blue-600 text-white font-semibold rounded" on:click|preventDefault={placeOrder}>Place Order</button>
+{#if !currentOrder || currentOrder.status !== 'cart'}
+<button class="px-4 py-2 bg-blue-600 text-white font-semibold rounded hover:bg-blue-700 transition-colors" on:click|preventDefault={addToCart}>Add to Cart</button>
+{/if}
 {/if}
 {/if}
