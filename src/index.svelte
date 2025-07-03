@@ -13,19 +13,40 @@ let cutoffCheckInterval;
 onMount(async () => {
   try {
     // Fetch user info
-    const userRes = await fetch('/api/me');
-    const userData = await userRes.json();
-    userInfo = userData;
+    try {
+      const userRes = await fetch('/api/me');
+      if (userRes.ok) {
+        const userData = await userRes.json();
+        userInfo = userData;
+      } else {
+        console.error('Failed to fetch user info:', userRes.status);
+      }
+    } catch (e) {
+      console.error('Error fetching user info:', e);
+    }
     
     // Fetch delivery locations
-    const locRes = await fetch('/api/delivery-locations');
-    const locData = await locRes.json();
-    deliveryLocations = locData.locations || [];
+    try {
+      const locRes = await fetch('/api/delivery-locations');
+      if (locRes.ok) {
+        const locData = await locRes.json();
+        deliveryLocations = locData.locations || [];
+      } else {
+        console.error('Failed to fetch delivery locations:', locRes.status);
+      }
+    } catch (e) {
+      console.error('Error fetching delivery locations:', e);
+      deliveryLocations = []; // Fallback to empty array
+    }
     
     // Fetch weekly menu data
     const res = await fetch('/api/meals');
+    if (!res.ok) {
+      throw new Error(`Failed to fetch meals: ${res.status}`);
+    }
     const data = await res.json();
     menu = data;
+    
     // Initialize selection structure for each variant
     orderSelections = {};
     if (menu && menu.meals) {
@@ -44,10 +65,19 @@ onMount(async () => {
         }
       }
     }
+    
     // Fetch current order (if any)
-    const orderRes = await fetch('/api/order');
-    const orderData = await orderRes.json();
-    currentOrder = orderData.order;
+    try {
+      const orderRes = await fetch('/api/order');
+      if (orderRes.ok) {
+        const orderData = await orderRes.json();
+        currentOrder = orderData.order;
+      } else {
+        console.error('Failed to fetch order:', orderRes.status);
+      }
+    } catch (e) {
+      console.error('Error fetching order:', e);
+    }
     
     // Set default delivery location
     if (currentOrder && currentOrder.delivery_location_id) {
@@ -56,6 +86,7 @@ onMount(async () => {
       selectedDeliveryLocation = userInfo.preferredDeliveryLocationId;
     }
   } catch (e) {
+    console.error('Error in onMount:', e);
     errorMsg = 'Failed to load menu.';
   } finally {
     isLoading = false;
@@ -230,8 +261,13 @@ async function updateDeliveryLocation() {
 </script>
 {#if isLoading}
 <p class="text-gray-600">Loading menu...</p>
+{:else if errorMsg}
+<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+  <p><strong>Error:</strong> {errorMsg}</p>
+  <p class="text-sm mt-2">Please refresh the page or contact support if the problem persists.</p>
+</div>
 {/if}
-{#if !isLoading}
+{#if !isLoading && !errorMsg}
 {#if menu && menu.week}
 <h1 class="text-2xl font-bold mb-4">Weekly Menu (Week of {menu.week.week_start_date})</h1>
 {#if !menu.week.is_open}

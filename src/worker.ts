@@ -46,6 +46,10 @@ export default {
       await env.DB.prepare('INSERT INTO users (name, email, created_at) VALUES (?, ?, ?)').bind(username, userEmail, userCreatedAt).run();
       user = await env.DB.prepare('SELECT id, name, preferred_delivery_location_id FROM users WHERE email = ?').bind(userEmail).first();
     }
+    // Ensure user object has the preferred_delivery_location_id field (even if null)
+    if (!user.hasOwnProperty('preferred_delivery_location_id')) {
+      user.preferred_delivery_location_id = null;
+    }
     const userId = user.id;
     // Check if user is an admin
     const adminRecord = await env.DB.prepare('SELECT id FROM admin_users WHERE user_id = ? AND is_active = 1').bind(userId).first();
