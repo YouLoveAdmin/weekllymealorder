@@ -1,46 +1,124 @@
-# Weekly Lunch Ordering System – Setup & Usage
+# Weekly Lunch Ordering System
 **Platform:** Cloudflare Workers with D1 (database) and static assets.
 
+## Quick Start
+
+For detailed setup instructions, see [SETUP.md](SETUP.md).
+
+## Prerequisites
+- Node.js installed
+- Cloudflare account
+- Wrangler CLI: `npm install -g wrangler`
+
 ## Setup and Deployment
-1. **Install Dependencies:** Ensure Node.js is installed. Run `npm install` to install all dependencies.
 
-2. **Cloudflare Configuration:** Set environment variables used by `wrangler.toml`:
-   - `CLOUDFLARE_ACCOUNT_ID` – your Cloudflare account ID.
-   - `D1_DATABASE_ID` – the ID of the D1 database named `lunch_orders` (create it with `wrangler d1 create lunch_orders`).
+1. **Clone and Install**
+   ```bash
+   git clone <your-repo-url>
+   cd weekly-lunch-orders
+   npm install
+   ```
 
-3. **Database Schema:** Apply the schema and seed data to your D1 database:
-```bash
-npx wrangler d1 execute lunch_orders --file=schema.sql
-```
-This will create all tables and insert initial data (meals, options, admin users, etc.).
-4. **Build Frontend:** Compile the Svelte application with Tailwind:
-```bash
-npm run build
-```
-This outputs static assets to the `dist` directory (which the Worker will serve).
-5. **Cloudflare Access:** Configure Cloudflare Access to protect the application. Only authenticated users can reach the site, and the Worker relies on the `cf-access-authenticated-user-email` header to identify users. Ensure your Access policy passes this header. To grant admin rights, use the seeded admin emails (`alice@example.com`, `bob@example.com`) or update the `admin_users` table with your own email/user.
-6. **Development:** During development, run:
-```bash
-npm run dev
-```
-This will watch and rebuild the frontend on changes and run `wrangler dev` to serve the Worker locally. The application will be available at the localhost test address (by default, http://127.0.0.1:8787).
-7. **Testing:** Log in via Cloudflare Access. Regular users will see the weekly menu at the root URL (`/`). Admin users can access the admin interface at `/admin.html` (the Worker also redirects `/admin` to this page).
-8. **Deployment:** When ready to deploy, run:
-```bash
-npx wrangler publish
-```
-This will upload the Worker script and static assets to Cloudflare. Once published, the app will be live on your workers.dev subdomain or your configured custom domain route.
+2. **Configure Wrangler**
+   - Copy `wrangler.toml.template` to `wrangler.toml`
+   - Replace `YOUR_CLOUDFLARE_ACCOUNT_ID` with your actual account ID
+   - Replace `YOUR_D1_DATABASE_ID` with your D1 database ID
+
+3. **Authenticate and Setup Database**
+   ```bash
+   npx wrangler login
+   npx wrangler d1 create lunch_orders  # if database doesn't exist
+   npx wrangler d1 execute lunch_orders --remote --file=schema.sql
+   ```
+
+4. **Build and Deploy**
+   ```bash
+   npm run build
+   npx wrangler deploy
+   ```
 
 ## Usage
-- **User View:** Authenticated users can view the weekly menu on the home page. They can select a quantity for each meal variant and choose options (e.g., Spice Level, Add Sauce). Clicking "Place Order" will submit their order. The interface will display the user's current order for the week and the total price. Users are limited to one order per week; attempting to place a second order will be prevented.
-- **Admin View:** Users marked as admins (in the `admin_users` table) can access the admin interface at `/admin.html`. The admin page provides:
-  - **Meal Management:** Add new meals and their descriptions. Add variants (sizes with price and calories) to each meal.
-  - **Option Management:** Create option groups (with flags for required/multi-select) and add option values (with extra costs). These option groups can be linked to meals.
-  - **Pricing Rules:** Define quantity-based discounts for meal variants by specifying a minimum quantity and a discounted price per unit.
-Changes made in the admin interface take effect immediately (they update the D1 database). Regular users will see updated menus or prices as soon as the data is changed.
 
-## Security & Notes
-- Cloudflare Access ensures only authorized users reach the application. The Worker verifies the user email on every request (`cf-access-authenticated-user-email` header).
-- The `admin_users` table controls admin privileges within the app. Non-admin users cannot access admin API routes (the Worker returns 403 Forbidden for those attempts).
-- All important calculations and validations (like total price, discount rules, one-order-per-week enforcement) are performed server-side in the Worker for security.
-- The database uses *immutable versioning* for meals, options, etc. In this simple setup, we always fetch and manipulate the active version of each item. When updating an entity, the intended approach is to insert a new row with an incremented version and mark the old version as inactive (preserving historical data integrity for past orders).
+### User Interface
+- **Home Page (/):** Authenticated users can view the weekly menu, select meal quantities, choose options (spice level, add-ons), and place orders
+- **Order Limits:** Users are limited to one order per week
+- **Real-time Updates:** Menu and pricing changes by admins are immediately visible
+
+### Admin Interface (/admin)
+Admin users can access the management interface at `/admin.html`:
+- **Meal Management:** Add/edit meals and their descriptions
+- **Variant Management:** Create meal variants with different sizes, prices, and calories
+- **Option Management:** Create option groups (required/multi-select) and option values with extra costs
+- **Pricing Rules:** Define quantity-based discounts
+- **Order Overview:** View and manage all user orders
+
+## Development
+
+- **Development server:** `npm run dev` (builds frontend with watch mode)
+- **Build for production:** `npm run build`
+- **Deploy:** `npx wrangler deploy`
+- **Local testing:** Available at http://127.0.0.1:8787 during development
+
+## Configuration
+
+### Cloudflare Access Setup
+Configure Cloudflare Access to protect the application:
+- Only authenticated users can reach the site
+- The Worker relies on the `cf-access-authenticated-user-email` header to identify users
+- Ensure your Access policy passes this header
+
+### Admin User Setup
+Grant admin privileges by adding users to the `admin_users` table:
+```bash
+npx wrangler d1 execute lunch_orders --remote --command "INSERT INTO admin_users (user_id, role, is_active) SELECT id, 'admin', 1 FROM users WHERE email = 'your-email@domain.com';"
+```
+
+## Architecture
+
+- **Frontend:** Svelte with Tailwind CSS
+- **Backend:** Cloudflare Workers
+- **Database:** Cloudflare D1 (SQLite-compatible)
+- **Authentication:** Cloudflare Access
+- **Deployment:** Serverless on Cloudflare's edge network
+
+## Important Files
+
+### Included in Repository
+- `wrangler.toml.template` - Configuration template (safe to share)
+- `schema.sql` - Database schema and seed data
+- `src/` - Source code (Worker and Svelte components)
+- `SETUP.md` - Detailed setup instructions
+
+### Excluded from Repository (see .gitignore)
+- `wrangler.toml` - Contains sensitive account/database IDs
+- `node_modules/` - Dependencies (install with `npm install`)
+- `dist/` - Build output (generated with `npm run build`)
+- `.wrangler/` - Wrangler cache and local state
+
+## Security & Technical Notes
+
+### Security
+- **Authentication:** Cloudflare Access ensures only authorized users can access the application
+- **Authorization:** Admin privileges are controlled via the `admin_users` table
+- **Server-side Validation:** All calculations, pricing, and order limits are enforced server-side
+- **Data Integrity:** Database uses immutable versioning for audit trails
+
+### Technical Details
+- **Edge Computing:** Runs on Cloudflare's global edge network for low latency
+- **Serverless:** No server management required, scales automatically
+- **Database:** D1 provides SQLite-compatible database with global replication
+- **Static Assets:** Frontend is served as static files from Cloudflare's CDN
+
+## Contributing
+
+1. Follow the setup instructions in [SETUP.md](SETUP.md)
+2. Make your changes
+3. Test locally with `npm run dev`
+4. Deploy with `npx wrangler deploy`
+
+## Support
+
+For issues or questions:
+- Check the [SETUP.md](SETUP.md) for detailed configuration steps
+- Review the database schema in `schema.sql`
+- Examine the Worker API in `src/worker.ts`
