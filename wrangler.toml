@@ -1,18 +1,16 @@
 name = "weekly-lunch-orders"
 
-account_id = "bbf7369bf71453ff85da6e28335e8a06"
+# Replace with your Cloudflare account ID
+account_id = "YOUR_CLOUDFLARE_ACCOUNT_ID"
 
 main = "src/worker.ts"
 compatibility_date = "2025-06-30"
 
 [[d1_databases]]
-
-
 binding = "DB"
 database_name = "lunch_orders"
-database_id = "67d6a539-a52f-47d1-b353-75160c767d3a"
-
-
+# Replace with your D1 database ID (create with: wrangler d1 create lunch_orders)
+database_id = "YOUR_D1_DATABASE_ID"
 
 [assets]
 directory = "./dist"
